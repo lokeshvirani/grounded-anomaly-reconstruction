@@ -163,25 +163,38 @@ sizes are not quantitatively meaningful.
 | Feature extraction resolution | 384×384 |
 | Dim. reduction | PCA → 50, then t-SNE (perplexity 30, PCA init, seed 42) |
 
-## 10. Results (three failure-mode categories)
+## 10. Results (all eight categories)
 
-The pipeline was run end-to-end on `can`, `fruit_jelly`, and `walnuts` — each with
-15 distinct defects captioned and 60 grounded reconstructions, compared in a
-shared per-category t-SNE (`results/recon_tsne_full/tsne_<cat>.png`).
+The pipeline was run end-to-end on all eight MVTec AD 2 categories — each with 15
+distinct defects captioned and 60 grounded reconstructions, compared in a shared
+per-category t-SNE (`results/recon_tsne_full/tsne_<cat>.png`).
 
-| Category | Patches (gen / real / normal) | Overlap | Interpretation |
+| Category | Patches (gen / real) | Overlap | Interpretation |
 |---|---|---|---|
-| `can` | 300 / 450 / 1800 | partial | texture-like defects (holographic foil) reproduce; structured ones (wrong text panels, mis-registration) do not |
-| `fruit_jelly` | 1632 / 1848 / 1800 | poor | generated patches collapse into a single region, largely separate from the real clusters; the model hallucinates artifacts instead of the real contamination |
-| `walnuts` | 2168 / 2200 / 1800 | partial | some generated clusters sit near real ones, but coverage is incomplete and partly driven by hallucinated content |
+| `vial` | 2200 / 2200 | good | generated and real strongly intermix — dark contamination blobs reproduce well |
+| `can` | 300 / 450 | partial | holographic-foil defects reproduce; wrong-text / mis-registration do not |
+| `walnuts` | 2168 / 2200 | partial | some overlap, partly driven by hallucinated content |
+| `wallplugs` | 780 / 1188 | partial | some overlap; most real clusters uncovered |
+| `fruit_jelly` | 1632 / 1848 | poor | generated collapse into one region, separate from real; model hallucinates artifacts |
+| `fabric` | 484 / 738 | poor | real defects sit apart; generated scatter into the normal cloud |
+| `rice` | 816 / 1410 | poor | generated cluster on their own, separate from real |
+| `sheet_metal` | 656 / 1908 | poor | generated land in the central / normal region, not on the real clusters |
 
-Across all three categories, grounding the generation in the real defect's own
-caption and location **narrows but does not close** the real–synthetic gap. Even
-with a faithful description and the correct location, the diffusion model cannot
-reproduce much of the real-defect distribution — evidence that the gap is a
-**generative-model limitation**, not a prompt-engineering problem. `fruit_jelly`
-is the clearest single case.
+(Normal patches ≈ 1800 per category.)
 
-A known limitation: some captions exceed the CLIP 77-token limit and are
-truncated; they are front-loaded with the defect description so the salient
-content is retained.
+The gap **closes only for simple, high-contrast, additive defects**: `vial`
+(dark contamination / bubbles in clear liquid) is the single category where
+generated and real overlap strongly. For **subtle textural defects** (fabric,
+rice, sheet_metal) and **complex / structured defects**, grounding the generation
+in the real defect's own caption and location **narrows but does not close** the
+real–synthetic gap. Even with a faithful description and the correct location,
+the diffusion model cannot reproduce most of the real-defect distribution —
+evidence that the gap is a **generative-model limitation**, not a
+prompt-engineering problem.
+
+Caveats: (i) some captions exceed the CLIP 77-token limit and are truncated; they
+are front-loaded with the defect description so the salient content is retained.
+(ii) for the subtle texture categories (fabric, rice, sheet_metal) the defects
+are hard to describe even when localised by their mask, so part of the poor
+overlap reflects the difficulty of *describing* the defect, not only generating
+it.
