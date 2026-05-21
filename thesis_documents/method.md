@@ -163,12 +163,25 @@ sizes are not quantitatively meaningful.
 | Feature extraction resolution | 384×384 |
 | Dim. reduction | PCA → 50, then t-SNE (perplexity 30, PCA init, seed 42) |
 
-## 10. First experiment (can)
+## 10. Results (three failure-mode categories)
 
-The pipeline was run end-to-end on `can`: 15 distinct defects captioned, 60
-reconstructions generated, and a single shared t-SNE produced (300 generated vs
-450 real vs 1800 normal patches). The grounded reconstructions overlap the real
-defects only partially — texture-like defects (holographic foil) are reproduced,
-while structured defects (wrong text panels, mis-registration) are not — so the
-real–synthetic gap narrows but does not close, indicating a generative-model
-limitation rather than a prompting problem.
+The pipeline was run end-to-end on `can`, `fruit_jelly`, and `walnuts` — each with
+15 distinct defects captioned and 60 grounded reconstructions, compared in a
+shared per-category t-SNE (`results/recon_tsne_full/tsne_<cat>.png`).
+
+| Category | Patches (gen / real / normal) | Overlap | Interpretation |
+|---|---|---|---|
+| `can` | 300 / 450 / 1800 | partial | texture-like defects (holographic foil) reproduce; structured ones (wrong text panels, mis-registration) do not |
+| `fruit_jelly` | 1632 / 1848 / 1800 | poor | generated patches collapse into a single region, largely separate from the real clusters; the model hallucinates artifacts instead of the real contamination |
+| `walnuts` | 2168 / 2200 / 1800 | partial | some generated clusters sit near real ones, but coverage is incomplete and partly driven by hallucinated content |
+
+Across all three categories, grounding the generation in the real defect's own
+caption and location **narrows but does not close** the real–synthetic gap. Even
+with a faithful description and the correct location, the diffusion model cannot
+reproduce much of the real-defect distribution — evidence that the gap is a
+**generative-model limitation**, not a prompt-engineering problem. `fruit_jelly`
+is the clearest single case.
+
+A known limitation: some captions exceed the CLIP 77-token limit and are
+truncated; they are front-loaded with the defect description so the salient
+content is retained.
