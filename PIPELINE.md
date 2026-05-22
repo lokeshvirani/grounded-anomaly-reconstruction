@@ -14,6 +14,19 @@ t-SNE plus an overlap score.
 | `src/run_pipeline.py` | orchestrator: for each defect, load caption + mask + a good base, call regenerate, save |
 | `src/embed_tsne.py` | embed real / generated / normal (ResNet50) → t-SNE plot + overlap score |
 
+## Two models — both pretrained (not trained by me)
+
+| Role | Model | Trained by me? |
+|---|---|---|
+| **Generate** the defect | SDXL inpainting (`stable-diffusion-xl-1.0-inpainting-0.1`) | No — used as-is |
+| **Compare** real vs generated | ResNet50 (ImageNet, classifier head removed) | No — used as-is |
+
+The SDXL inpainting model *creates* the defect; ResNet50 generates nothing — it only
+turns images into feature vectors for the t-SNE comparison. Because the generator is
+used pretrained/off-the-shelf, the "generation limitation" finding is the limit of the
+**off-the-shelf** model — the natural next step to close the gap would be to *fine-tune*
+the generator on real defects.
+
 ## How it runs, step by step
 
 **Generate (`run_pipeline.py` + `regenerate.py`):**
