@@ -40,3 +40,27 @@ See `thesis_documents/method.md` for the full method.
 
 The MVTec AD 2 dataset is not included; point `--src_dir` at your preprocessed
 copy with `<category>/{train,test}` splits and `*_GT.png` masks.
+
+## Standalone generation pipeline (latest)
+
+A self-contained version of the loop, driven by the cached captions, with a
+quantitative overlap score and per-category defect-crop t-SNE figures.
+
+| Path | Role |
+|------|------|
+| `src/regenerate.py` | SDXL inpainting: good image + mask + caption -> generated defect |
+| `src/run_pipeline.py` | Reads cached captions, generates defects for a category |
+| `src/embed_tsne.py` | ResNet50 embeddings + t-SNE + overlap score (`--crop_to_mask`) |
+| `figures/tsne_<category>_crop.png` | Defect-crop t-SNE per category (normal / real / generated) |
+| `RESULTS.md` | 8-category overlap-score table + how to read the figures |
+
+    # generate defects for a category (reads the cached captions)
+    python src/run_pipeline.py --category can \
+        --captions_json llm_captions_can_full.json \
+        --src_dir dataset/preprocessed --low_vram
+
+    # embed + t-SNE + overlap score, cropped to the defect region
+    python src/embed_tsne.py --category can \
+        --src_dir dataset/preprocessed --crop_to_mask
+
+See `RESULTS.md` for the 8-category results and figures.
