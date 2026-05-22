@@ -1,4 +1,4 @@
-# PIPELINE — quick reference (for the meeting)
+# PIPELINE — quick reference 
 
 **One sentence:** For each real defect I take its vision-LLM caption and its real
 GT mask, inpaint that defect onto a clean image with a diffusion model, then embed
