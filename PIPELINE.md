@@ -59,21 +59,22 @@ the generator on real defects.
 - **Balanced overlap score** → normals outnumber defects, so we subsample normals to
   match the count and average over 20 draws.
 
-## Results (full table in `RESULTS.md`)
-
-Overlap score, high → low:
-`rice 0.54 · wallplugs 0.43 · fabric 0.40 · vial 0.32 · sheet_metal 0.29 · can 0.16 · fruit_jelly 0.12 · walnuts 0.10`
+## Results (details in `RESULTS.md`)
 
 **Read each figure on two questions:**
 1. Do green (real) points separate from blue (normal)? → *is the defect visible?*
 2. Do orange (generated) land on the green? → *did generation reproduce it?*
 
-- **vial** = genuine partial success · **walnuts / fruit_jelly / can** = genuine
-  failure · **rice / fabric / wallplugs** = inconclusive (defect ≈ normal, so the
-  high score is intermixing, not success).
+Verdicts from the figures:
+- **vial** = success · **can / sheet_metal** = partial · **walnuts / fruit_jelly** =
+  failure · **rice / fabric / wallplugs** = inconclusive (defect ≈ normal).
 
 **Headline:** Grounded generation narrows but does **not** close the real-vs-synthetic
 gap; success is defect-type dependent → it's a **generation-model** limitation.
+
+*Note:* a numeric overlap/separability score was attempted but is too noisy to rank
+categories (near-duplicate lighting variants inflate nearest-neighbour scores, and
+only 15 diverse defects per class) — so the **figures** are the evidence, not a number.
 
 ## Likely questions
 
