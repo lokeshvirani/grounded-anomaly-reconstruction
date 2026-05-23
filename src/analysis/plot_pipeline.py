@@ -1,9 +1,10 @@
 """Draw the grounded-reconstruction method pipeline as a figure for the thesis.
 
-Two rows: (top) generation path real->caption->inpaint->generated; (bottom)
-analysis path patches->features->t-SNE. Saves results/method/pipeline.png.
+Two rows: (top) generation path real->caption->inpaint->regenerated; (bottom)
+analysis path images->ResNet50 embedding->t-SNE. Saves
+thesis_documents/method_pipeline.png (where method.md references it).
 
-Run anywhere with matplotlib (no GPU/data needed):
+Run anywhere with matplotlib (no GPU/data needed), from the repo root:
     python src/analysis/plot_pipeline.py
 """
 import os
@@ -12,7 +13,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
 
-OUT = "results/method/pipeline.png"
+OUT = "thesis_documents/method_pipeline.png"
 
 C_GOOD = "#dff0d8"; C_BAD = "#f2dede"; C_MASK = "#e7e7e7"
 C_LLM = "#d9e8fb"; C_GEN = "#fde9d9"; C_FEAT = "#e8e0f5"; C_OUT = "#fff3cd"
@@ -40,42 +41,42 @@ def arrow(ax, x0, y0, x1, y1, text="", rad=0.0):
 
 
 def main():
-    os.makedirs(os.path.dirname(OUT), exist_ok=True)
+    os.makedirs(os.path.dirname(OUT) or ".", exist_ok=True)
     fig, ax = plt.subplots(figsize=(13.5, 7))
     ax.set_xlim(0, 16); ax.set_ylim(0, 9); ax.axis("off")
 
-    # ---- top row: generation path ----
+    # ---- top row: generation path (real -> caption -> regenerate) ----
     box(ax, 0.3, 6.3, 2.3, 1.0, "Bad image", "real defect", C_BAD)
     box(ax, 0.3, 4.5, 2.3, 1.0, "Good image", "clean / normal", C_GOOD)
     box(ax, 0.3, 2.7, 2.3, 1.0, "GT mask", "defect location", C_MASK)
 
-    box(ax, 3.4, 6.3, 2.5, 1.0, "Stage 1", "Vision LLM caption", C_LLM)
+    box(ax, 3.4, 6.3, 2.5, 1.0, "Stage 1", "vision-LLM caption", C_LLM)
     box(ax, 6.7, 6.3, 3.0, 1.0, "Caption", "“holographic foil patch…”", C_OUT)
 
     box(ax, 10.4, 4.6, 2.7, 1.6, "Stage 2", "SDXL inpainting", C_LLM)
-    box(ax, 13.4, 4.9, 2.3, 1.0, "Generated", "synthetic defect", C_GEN)
+    box(ax, 13.4, 4.9, 2.3, 1.0, "Regenerated", "synthetic defect", C_GEN)
 
     arrow(ax, 2.6, 6.8, 3.4, 6.8)                                  # bad -> LLM
     arrow(ax, 5.9, 6.8, 6.7, 6.8)                                  # LLM -> caption
     arrow(ax, 9.7, 6.6, 10.6, 6.1, "what")                        # caption -> inpaint
     arrow(ax, 2.6, 5.0, 10.4, 5.5, "base (clean object)")        # good -> inpaint
     arrow(ax, 2.6, 3.2, 10.4, 4.9, "where (mask)")               # mask -> inpaint
-    arrow(ax, 13.1, 5.4, 13.4, 5.4)                               # inpaint -> generated
+    arrow(ax, 13.1, 5.4, 13.4, 5.4)                               # inpaint -> regenerated
 
-    # ---- bottom row: analysis path ----
-    box(ax, 0.3, 0.6, 3.3, 1.3,
-        "Patches", "real · normal · generated", C_GOOD)
-    box(ax, 4.4, 0.6, 3.6, 1.3,
-        "Stage 3", "WideResNet50 L2+L3 (1536-D)", C_FEAT)
-    box(ax, 8.8, 0.6, 3.0, 1.3, "Stage 4", "PCA(50) → t-SNE", C_FEAT)
-    box(ax, 12.6, 0.6, 3.1, 1.3, "t-SNE figure", "real vs gen vs normal", C_OUT)
+    # ---- bottom row: analysis path (embed -> t-SNE) ----
+    box(ax, 0.3, 0.6, 3.6, 1.3,
+        "Images", "real · regenerated · normal", C_GOOD)
+    box(ax, 4.7, 0.6, 3.6, 1.3,
+        "Stage 3", "ResNet50 2048-D (crop to mask)", C_FEAT)
+    box(ax, 9.1, 0.6, 2.6, 1.3, "t-SNE", "2-D projection", C_FEAT)
+    box(ax, 12.5, 0.6, 3.2, 1.3, "t-SNE figure", "real vs regen vs normal", C_OUT)
 
-    arrow(ax, 3.6, 1.25, 4.4, 1.25)
-    arrow(ax, 8.0, 1.25, 8.8, 1.25)
-    arrow(ax, 11.8, 1.25, 12.6, 1.25)
+    arrow(ax, 3.9, 1.25, 4.7, 1.25)
+    arrow(ax, 8.3, 1.25, 9.1, 1.25)
+    arrow(ax, 11.7, 1.25, 12.5, 1.25)
 
-    # generated -> analysis patches (routed curve)
-    arrow(ax, 14.5, 4.9, 2.0, 1.9, "generated images", rad=0.18)
+    # regenerated -> analysis images (routed curve)
+    arrow(ax, 14.5, 4.9, 2.1, 1.9, "regenerated images", rad=0.18)
 
     fig.suptitle("Grounded reconstruction pipeline: real → caption → "
                  "regenerate → compare in feature space",

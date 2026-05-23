@@ -127,6 +127,30 @@ def overlap_score(gen_feats, real_feats, normal_feats, trials=20, seed=0):
     return float(np.mean(scores))
 
 
+def separability_score(real_feats, normal_feats, trials=20, seed=0):
+    """How separable real defects are from normal images (mirror of overlap_score).
+
+    For each real defect, is its nearest OTHER real closer than its nearest normal?
+    Normals subsampled to match the real count, averaged. ~1.0 = real defects form
+    their own cluster (separable from normal); low = mixed in with normals.
+    Only when this is high does overlap_score mean 'generation reproduced the defect'."""
+    rng = np.random.default_rng(seed)
+    n = min(len(real_feats), len(normal_feats))
+    dist_to_real = []
+    for i, r in enumerate(real_feats):
+        d = np.linalg.norm(real_feats - r, axis=1)
+        d[i] = np.inf                       # exclude self (a point's distance to itself is 0)
+        dist_to_real.append(d.min())
+    dist_to_real = np.array(dist_to_real)
+    scores = []
+    for _ in range(trials):
+        sample = normal_feats[rng.choice(len(normal_feats), n, replace=False)]
+        dist_to_normal = np.array([np.linalg.norm(sample - r, axis=1).min()
+                                   for r in real_feats])
+        scores.append(float(np.mean(dist_to_real < dist_to_normal)))
+    return float(np.mean(scores))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--src_dir", default="dataset/preprocessed")
@@ -144,6 +168,7 @@ def main():
     # 1. collect paths for the three groups (use test.csv if present, else train.csv)
     csv_name = "test.csv" if os.path.exists(os.path.join(cat_dir, "test.csv")) else "train.csv"
     real_paths = list_by_label(cat_dir, csv_name, "positive")
+    real_paths = [p for p in real_paths if p.endswith("_regular.png")]  # one per distinct defect (drop lighting/shift variants)
     normal_paths = list_by_label(cat_dir, csv_name, "negative")
     gen_paths = list_generated(cat_dir, args.generated_dirname)
     if args.max_per_group:
@@ -176,6 +201,11 @@ def main():
     score = overlap_score(gen_feats, real_feats, normal_feats)
     print(f"OVERLAP_SCORE {args.category}: {score:.2f}  "
           f"(1.0 = looks like real defects, 0.0 = looks like normals)")
+
+    # how separable are the real defects from normal in the first place?
+    sep = separability_score(real_feats, normal_feats)
+    print(f"SEPARABILITY_SCORE {args.category}: {sep:.2f}  "
+          f"(1.0 = real defects distinct from normal, low = mixed in)")
 
     # 3. run t-SNE on all vectors together (so they share one 2-D space)
     all_feats = np.concatenate([real_feats, gen_feats, normal_feats])

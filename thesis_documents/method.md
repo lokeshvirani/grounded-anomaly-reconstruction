@@ -1,200 +1,312 @@
 # Method
 
-## 1. Motivation
+## 1. Goal
 
-Earlier experiments compared real anomalies against *synthetic* anomalies that
-were produced from **random mask shapes and generic, human-written prompts**.
-Under that setting real and synthetic patches did not overlap in feature space,
-but the comparison was not fair: the generator was never actually asked to
-reproduce a *specific* real defect.
+Industrial anomaly detection is held back by how few real defects exist. A natural
+remedy is to *generate* synthetic defects, but earlier experiments showed that
+synthetic and real anomalies do not overlap in feature space. That comparison was
+not fair, however: the generator was driven by generic prompts and random mask
+shapes, so it was never actually asked to reproduce a *specific* real defect.
 
 This method removes that confound with a **grounded reconstruction** test. For
-every real defect we condition the generator on (i) a description of the defect
-produced by a vision LLM and (ii) the defect's own location (its ground-truth
-mask), and ask it to paint that defect onto a clean object. The synthetic output
-is therefore a deliberate attempt to reproduce a known real defect. We then
-compare real, synthetic, and normal samples in the PatchCore feature space with
-t-SNE. If grounded generation still fails to overlap the real defects, the gap
-is attributable to the **generative model**, not to prompt engineering.
+each real defect we (i) describe it with a vision–language model and (ii) repaint
+that description onto a clean object **at the real defect's own location**. The
+synthetic output is therefore a deliberate attempt to reproduce one known real
+defect. We then compare real, regenerated, and normal images in feature space
+with t-SNE. If grounded regeneration *still* fails to overlap the real defects,
+the remaining gap is a property of the **generative model**, not of prompt
+wording.
+
+The experiment is run one category at a time.
 
 ## 2. Pipeline overview
 
 ![Grounded reconstruction pipeline](method_pipeline.png)
 
+*(text version of the same diagram:)*
+
 ```
-                 ┌──────────────────────────────┐
-   real BAD ────►│  Stage 1: Vision-LLM caption │────►  "diamond holographic
-   image         └──────────────────────────────┘        foil patch on label"
-      │                                                          │
-      │ (its ground-truth mask = WHERE)                          │ (WHAT)
-      ▼                                                          ▼
-   ┌──────┐   good (normal) image (BASE)   ┌───────────────────────────────┐
-   │  GT  │ ─────────────────────────────► │ Stage 2: SDXL inpainting      │
-   │ mask │                                │ base + mask + caption         │──► GENERATED
-   └──────┘                                └───────────────────────────────┘     defect
-                                                                                    │
-   real defects ─┐                                                                  │
-   normals ──────┤                                                                  │
-   generated ────┴──►  ┌─────────────────────────────────┐                         │
-                       │ Stage 3: PatchCore patch features│ ◄───────────────────────┘
-                       │  WideResNet50 layer2+layer3 (1536-D)
-                       └─────────────────────────────────┘
-                                        │
-                                        ▼
-                       ┌─────────────────────────────────┐
-                       │ Stage 4: PCA(50) → t-SNE(2-D)    │──►  comparison figure
-                       │  real vs generated vs normal     │     (overlap = match)
-                       └─────────────────────────────────┘
+  GOOD image (normal) ───────────────────────────────────────┐ base canvas
+                                                              │
+  BAD image (real defect) ──► [ Stage 1 ] ──► caption ────────┤ "what"
+        │                      vision LLM       (text)        │
+        │                      caption.py                     ▼
+        │                                            [ Stage 2 ]
+        │   GT mask ────────────────────────────────► SDXL inpaint ──► REGENERATED
+        │   "where"                                   run_pipeline.py      defect
+        ▼                                             regenerate.py          │
+   ┌──────────────── three image groups ──────────────────┐                 │
+   │   real (bad)   ·   regenerated   ·   normal (good)    │ ◄───────────────┘
+   └───────────────────────────┬──────────────────────────┘
+                               ▼
+                      [ Stage 3 ]  ResNet50 embedding (2048-D, cropped to mask)
+                               ▼     embed_tsne.py
+                          t-SNE → 2-D scatter
+                               ▼
+              overlap?   real  vs  regenerated  vs  normal
 ```
 
-## 3. Data
+A single real **bad** image supplies two things: the *what* (a caption of the
+defect) and the *where* (its ground-truth mask). A separate **good** image is the
+clean canvas. The diffusion model paints the captioned defect into the masked
+region of the good image, producing a **regenerated** defect at the real defect's
+location. Finally the real, regenerated, and normal images are embedded into one
+feature space and projected with t-SNE, so the figure answers a single question:
+**do the regenerated points land on the real ones?**
 
-We use the MVTec AD 2 dataset, pre-processed per category into
-`data/preprocessed/<category>/` with `train/`, `test/`, and `train.csv` /
-`test.csv` listing each image as `negative` (normal) or `positive` (defective).
-Each defective image `X.png` has a paired ground-truth mask `X_GT.png`.
+## 3. Data flow
 
-- **Good (normal) images** — `negative` rows; used as the clean base for
-  inpainting and as the source of normal patches.
-- **Real (bad) images** — `positive` rows with their `_GT` masks; provide both
-  the LLM caption input (Stage 1) and the defect location (Stage 2).
+Each category lives in `dataset/preprocessed/<category>/` with `train/`, `test/`,
+and `train.csv` / `test.csv`. Every row is labelled `negative` (normal / good) or
+`positive` (defective / bad); each bad image `X.png` has a paired ground-truth
+mask `X_GT.png`. From this the three roles are drawn:
 
-The `can` category contains 90 defective images that correspond to **15 distinct
-defects** (each captured under several lighting/shift variants). We caption the
-15 distinct defects, which covers the full variety of defect *types* (holographic
-foil patches, wrong overprinted text panels, mis-registered labels).
+- **good (normal)** — `negative` rows: the clean inpainting canvas, and the
+  normal group in the t-SNE.
+- **bad (real defect)** — `positive` rows with their `_GT` masks: the caption
+  source (Stage 1), the defect location (Stage 2), and the real group in the
+  t-SNE.
 
-Images are resized to **256×256** for generation and **384×384** for feature
-extraction (the finer grid yields more patches per small defect).
+The data then moves through three stages:
+
+| Stage | Input | Process | Output | File |
+|---|---|---|---|---|
+| **1 — Caption** | real **bad** image | a vision LLM describes the defect in one sentence | caption text, paired with its source path (JSON) | `src/caption.py` |
+| **2 — Regenerate** | caption + a random **good** image + the bad image's **GT mask** | SDXL inpainting repaints only the masked region with the captioned defect | regenerated defect image (+ its mask + a `good \| real \| generated` compare strip) | `src/run_pipeline.py`, `src/regenerate.py` |
+| **3 — Embed & compare** | real, regenerated, and normal images, each cropped to its defect mask | ResNet50 (classifier removed) → one 2048-D vector per image; all three groups projected together with t-SNE | 2-D scatter coloured by group (+ overlap / separability scores) | `src/embed_tsne.py` |
+
+**Reading the result.** In the t-SNE, regenerated points overlapping the real
+points means grounded generation reproduced the defect; regenerated points
+sitting apart means it did not. The overlap is only meaningful when the real
+defects first separate from the normals — so a *separability* check (real vs
+normal) is read alongside the *overlap* (regenerated vs real).
 
 ## 4. Stage 1 — Defect captioning (vision LLM)
 
-Each real defect image is shown to a vision-language model (VLM) with an
-instruction to return a single concise sentence describing the defect's
-appearance, type, and location, phrased as an image-generation prompt. The
-captions are stored paired with their source image paths so that each caption
-can later be matched to the same defect's mask.
+**Purpose.** Turn a real defect image into a short, defect-specific text
+description that can serve directly as the diffusion prompt in Stage 2.
 
-- Output: `llm_captions_can_full.json` — `{"captions": {cat: [...]},
-  "sources": {cat: [...]}}` with `caption[i] ↔ source[i]`.
-- Captions are produced by a vision-language model and stored paired with their
-  source image paths, so each caption maps to the same defect's mask downstream.
+**Procedure.** Each real **bad** image is read and base64-encoded, then sent to a
+vision–language model (VLM) together with a fixed instruction. The instruction
+states that the image is an industrial inspection photo of a given `<category>`
+with a real manufacturing defect, and asks for **one sentence of under 20 words**
+describing the defect's **appearance, type, and location**, phrased as a concrete
+image-generation prompt, returning only that sentence. The reply is trimmed of
+surrounding quotes and any trailing period.
+
+**Design choices.**
+
+- *One short sentence (< 20 words).* The caption becomes the Stage-2 prompt, which
+  SDXL encodes with CLIP under a 77-token limit; a short, front-loaded sentence
+  keeps the defect description inside that budget rather than being truncated.
+- *"appearance, type, and location".* Forces the description to be about the
+  defect, not the object, so defect-specific content is carried into generation.
+- *"as an image-generation prompt … reply with ONLY that sentence".* Makes the
+  output drop-in usable as the Stage-2 prompt with no manual editing.
+- *Per-category framing.* Naming the object (`can`, `fabric`, …) lets the model
+  describe the deviation from a normal item instead of describing the item itself.
+
+**Output.** Each caption is stored **paired with its source image path**, so it
+maps back to the same defect's mask in Stage 2:
+
+```json
+{ "captions": { "can": ["…", "…"] },
+  "sources":  { "can": ["test/.../000_regular.png", "…"] } }
+```
+
+with `captions[cat][i] ↔ sources[cat][i]`. For `can`, a representative caption is
+*"A large diamond-pattern holographic silver foil contamination patch covering the
+upper-left of the printed grapefruit label"* — describing the **printed-label**
+fault, which is the true `can` failure mode (not metal damage).
+
+**Code.** `src/caption.py` — `caption_image(image, category)` returns one caption;
+a thin driver applies it to every positive image in a category and writes the JSON
+above.
 
 ## 5. Stage 2 — Grounded regeneration (diffusion inpainting)
 
-For each `(caption, source)` pair we resolve the source to its preprocessed bad
-image and its `_GT` mask, then run **Stable Diffusion XL inpainting**:
+**Purpose.** Reproduce each real defect as a *synthetic* one: paint the captioned
+defect onto a clean object at the real defect's own location, so the output is a
+deliberate attempt to recreate one known real defect rather than an arbitrary
+synthetic anomaly.
 
-- **base image** = a randomly selected good (normal) image — the clean object;
-- **mask** = the real defect's own GT mask (soft-blurred edges) — *where* the
-  defect goes;
-- **prompt** = the LLM caption wrapped in a photo-realistic grounding template,
-  plus a per-category negative prompt that suppresses the wrong defect family
-  (e.g. for `can`, suppress metal-damage terms; do **not** suppress the
-  holographic/printed-label terms that describe the true defect).
+**Inputs (per defect).** Three things come together:
 
-Several reconstructions are produced per defect (different good bases) to sample
-the generator's behaviour. Each output is written so it plugs directly into the
-t-SNE step.
+- the **caption** from Stage 1 — the *what*;
+- a **random good image** from the category's `train.csv` `negative` rows — the
+  clean canvas the defect is painted onto;
+- the bad image's **GT mask** (`foo.png → foo_GT.png`) — the *where*.
 
-- Output: `data/preprocessed/<cat>/recon_llmcaption_full/{imgs,masks,compare}/`
-  plus `manifest.json`. `compare/` holds `good | real | generated` triptychs for
-  qualitative inspection.
-- Code: `src/reconstruct_real_defects.py`.
-- Settings: 256×256, 30 inference steps, guidance 7.0, strength 0.92.
+Generating onto a *clean* image (rather than editing the bad image) means the
+defect is genuinely synthesised, which is what the experiment tests; using the
+real mask grounds its location and shape.
 
-## 6. Stage 3 — Patch-descriptor extraction (PatchCore features)
+**Procedure.** The good image and mask are resized to a 256×256 canvas; the mask
+is loaded with nearest-neighbour resizing and its edges softened with a Gaussian
+blur (radius 2) so the synthetic defect blends into the object instead of showing
+a hard seam. **Stable Diffusion XL inpainting**
+(`diffusers/stable-diffusion-xl-1.0-inpainting-0.1`) repaints **only the masked
+region** with the captioned defect, leaving the rest untouched.
 
-Real, generated, and normal images are passed through a frozen
-**WideResNet50_2** backbone; we take `layer2` and `layer3` feature maps, local
-average-pool them, align them to a common grid, and concatenate to a **1536-D**
-descriptor per grid cell — exactly the representation used by PatchCore
-(`src/patchcore.py`). A grid cell counts as an **anomaly patch** when it lies
-inside the (dilated) GT mask.
+The caption is wrapped in a fixed template that steers toward a realistic
+inspection photo rather than a stylised image:
 
-- **Normal patches** — random grid cells from good images.
-- **Real anomaly patches** — mask-selected cells from real defects.
-- **Generated anomaly patches** — mask-selected cells from the reconstructions.
+> *"photorealistic close-up macro photo of {caption}, industrial inspection
+> image, natural lighting, subtle defect"*
 
-Working at patch level (rather than whole-image) keeps all three groups in one
-feature space and avoids the crop-vs-full-image scale artefact that distorted an
-earlier image-level t-SNE.
+and a **per-category negative prompt** suppresses the wrong *family* of defect.
+The default list forbids text, logos, cartoons, and oversized/unrealistic shapes.
+The `can` category overrides this: because `can` defects are **printed-label
+faults** (holographic foil, overprinted text), the negative prompt must **not**
+forbid text/letters — instead it forbids physical *metal* damage (dents,
+scratches, rust, punctures), which is the wrong defect type. Getting this
+override right is what lets the generator target the true defect.
 
-- Code: `src/analysis/tsne_real_vs_gen.py` (`PatchExtractor`,
-  `extract_pos_patches`, `extract_neg_patches`).
-
-## 7. Stage 4 — Embedding comparison (t-SNE)
-
-The three patch groups are stacked into one matrix, reduced with **PCA to 50
-dimensions** (denoising / speed), then projected to **2-D with t-SNE**
-(`perplexity=30`, `init="pca"`, fixed seed). t-SNE preserves local
-neighbourhoods, so patches with similar descriptors form clusters. The figure is
-drawn with normals as a faint background, generated patches in the mid-layer, and
-real patches on top.
-
-**Reading the figure:** where generated (orange) patches land on real (green)
-clusters, the synthetic defect matches a real one; real clusters with no
-generated points are defect types the generator failed to reproduce. t-SNE is
-read **qualitatively** (overlap vs no-overlap) — absolute distances and cluster
-sizes are not quantitatively meaningful.
-
-- Output: `results/recon_tsne_full/tsne_<cat>.png`.
-- Code: `src/analysis/tsne_real_vs_gen.py` (`main`).
-
-## 8. Implementation map
-
-| Stage | Role | File |
-|---|---|---|
-| 1 | Vision-language-model defect captioning | external VLM |
-| 2 | Grounded SDXL inpainting | `src/reconstruct_real_defects.py` |
-| 3 | PatchCore patch descriptors | `src/analysis/tsne_real_vs_gen.py` (extractor) |
-| 4 | PCA → t-SNE comparison + plot | `src/analysis/tsne_real_vs_gen.py` (`main`) |
-| — | Backbone reference (PatchCore) | `src/patchcore.py` |
-
-## 9. Hyperparameters
+**Settings.**
 
 | Item | Value |
 |---|---|
-| Generation resolution | 256×256 |
-| Inpainting model | `diffusers/stable-diffusion-xl-1.0-inpainting-0.1` |
-| Inference steps / guidance / strength | 30 / 7.0 / 0.92 |
-| Reconstructions per defect | 4 |
-| Feature backbone | WideResNet50_2, `layer2`+`layer3` (1536-D) |
-| Feature extraction resolution | 384×384 |
-| Dim. reduction | PCA → 50, then t-SNE (perplexity 30, PCA init, seed 42) |
+| Model | `diffusers/stable-diffusion-xl-1.0-inpainting-0.1` |
+| Canvas | 256×256 |
+| Mask edge blur | Gaussian radius 2 |
+| Inference steps | 30 |
+| Guidance scale | 7.0 |
+| Strength | 0.92 |
+| Seed | `42 + i` (fixed per defect → reproducible) |
 
-## 10. Results (all eight categories)
+Strength 0.92 nearly fully replaces the masked pixels, so the defect is actually
+generated rather than faintly blended, while staying below 1.0 to keep the
+repaint coherent with the base; guidance 7.0 follows the prompt without
+over-saturating.
 
-The pipeline was run end-to-end on all eight MVTec AD 2 categories — each with 15
-distinct defects captioned and 60 grounded reconstructions, compared in a shared
-per-category t-SNE (`results/recon_tsne_full/tsne_<cat>.png`).
+**Output.** For each defect `i`, under `dataset/preprocessed/<cat>/<out_dirname>/`
+(default `generated/`):
 
-| Category | Patches (gen / real) | Overlap | Interpretation |
-|---|---|---|---|
-| `vial` | 2200 / 2200 | good | generated and real strongly intermix — dark contamination blobs reproduce well |
-| `can` | 300 / 450 | partial | holographic-foil defects reproduce; wrong-text / mis-registration do not |
-| `walnuts` | 2168 / 2200 | partial | some overlap, partly driven by hallucinated content |
-| `wallplugs` | 780 / 1188 | partial | some overlap; most real clusters uncovered |
-| `fruit_jelly` | 1632 / 1848 | poor | generated collapse into one region, separate from real; model hallucinates artifacts |
-| `fabric` | 484 / 738 | poor | real defects sit apart; generated scatter into the normal cloud |
-| `rice` | 816 / 1410 | poor | generated cluster on their own, separate from real |
-| `sheet_metal` | 656 / 1908 | poor | generated land in the central / normal region, not on the real clusters |
+- `NNNN.png` — the regenerated defect image;
+- `masks/NNNN_GT.png` — the (resized, blurred) mask, saved so Stage 3 can crop the
+  generated image to the same defect region;
+- `compare/NNNN.png` — a `good | real | generated` triptych for quick inspection.
 
-(Normal patches ≈ 1800 per category.)
+Source paths are resolved against both `test/` and `train/`, so the same captions
+JSON works whichever split holds the images.
 
-The gap **closes only for simple, high-contrast, additive defects**: `vial`
-(dark contamination / bubbles in clear liquid) is the single category where
-generated and real overlap strongly. For **subtle textural defects** (fabric,
-rice, sheet_metal) and **complex / structured defects**, grounding the generation
-in the real defect's own caption and location **narrows but does not close** the
-real–synthetic gap. Even with a faithful description and the correct location,
-the diffusion model cannot reproduce most of the real-defect distribution —
-evidence that the gap is a **generative-model limitation**, not a
-prompt-engineering problem.
+**Code.** `src/run_pipeline.py` (driver: caption–source pairing, mask lookup,
+good-image choice, output writing) and `src/regenerate.py` (model loading, prompt
+and per-category negative prompt, inpainting, comparison strip).
 
-Caveats: (i) some captions exceed the CLIP 77-token limit and are truncated; they
-are front-loaded with the defect description so the salient content is retained.
-(ii) for the subtle texture categories (fabric, rice, sheet_metal) the defects
-are hard to describe even when localised by their mask, so part of the poor
-overlap reflects the difficulty of *describing* the defect, not only generating
-it.
+## 6. Stage 3 — Embedding and t-SNE comparison
+
+**Purpose.** Place the real, regenerated, and normal images in **one feature
+space** and compare them, to see whether grounded generation actually reproduced
+the real defects.
+
+**Groups.** Three image sets for the category, drawn with the same conventions as
+Stages 1–2:
+
+- **real (bad)** — `positive` `*_regular.png` rows of `test.csv`;
+- **regenerated** — the top-level PNGs in `generated/` (Stage 2 output);
+- **normal (good)** — `negative` rows.
+
+**Defect-region cropping.** A whole-image embedding would be dominated by the
+object rather than the small defect, so each image is cropped to its defect's
+bounding box (8 px padding) before embedding (`--crop_to_mask`):
+
+- real → its own `_GT` mask;
+- regenerated → its saved mask from `generated/masks/`;
+- normal → a randomly borrowed real mask, so normal crops match the defect crops
+  in scale and the comparison stays fair.
+
+**Embedding.** Each crop is resized to 224×224, ImageNet-normalised, and passed
+through a frozen **ResNet50** (ImageNet weights) with its classifier head removed,
+giving one **2048-D** vector per image.
+
+**Quantitative scores (on the raw 2048-D features).** Because t-SNE is read
+qualitatively, two nearest-neighbour scores back it up:
+
+- **overlap score** — fraction of regenerated crops whose nearest real defect is
+  closer than their nearest normal (normals subsampled to the real count, averaged
+  over 20 random draws). ≈1 → regenerated look like real defects; ≈0 → like
+  normals.
+- **separability score** — the mirror for real defects: fraction whose nearest
+  *other* real defect is closer than their nearest normal. ≈1 → real defects form
+  their own cluster, distinct from normal.
+
+Separability is the **precondition**: the overlap score is only meaningful when
+the real defects are separable from normal in the first place.
+
+**t-SNE.** All three groups' vectors are stacked and projected together to 2-D
+(`perplexity = min(30, N−1)`, fixed seed 42), so they share one map. The scatter
+is coloured normal (blue), real (green), regenerated (orange).
+
+**Reading the figure.** Where regenerated (orange) points land on real (green)
+clusters, generation reproduced that defect; orange points scattered among the
+blue normals mean it did not. Only neighbourhood/overlap is meaningful — absolute
+distances and cluster sizes are not.
+
+**Output.** `tsne_<category>_crop.png` (default in the category dir; `--out` points
+it to `results/`), plus the two scores printed to the console.
+
+**Code.** `src/embed_tsne.py`.
+
+---
+
+## 7. Results
+
+The pipeline was run end-to-end on all eight MVTec AD 2 categories — 15 distinct
+real defects each, regenerated and compared against the category's normal images,
+every crop taken at the defect region (`--crop_to_mask`). The two scores, ordered
+by overlap:
+
+| Category | Real | Normal | Overlap | Separability |
+|---|---|---|---|---|
+| `fabric` | 15 | 387 | 0.71 | 0.55 |
+| `wallplugs` | 15 | 293 | 0.69 | 0.69 |
+| `rice` | 15 | 313 | 0.54 | 0.30 |
+| `can` | 15 | 412 | 0.51 | 0.53 |
+| `vial` | 15 | 291 | 0.51 | 0.36 |
+| `sheet_metal` | 15 | 137 | 0.41 | 0.33 |
+| `walnuts` | 15 | 432 | 0.40 | 0.56 |
+| `fruit_jelly` | 15 | 263 | 0.32 | 0.38 |
+
+(overlap ∈ [0,1]: 1 = generated look like real defects; separability ∈ [0,1]:
+1 = real defects distinct from normal. Figures: `results/tsne_<category>_crop.png`.)
+
+### Worked example — `can`
+
+The vision-LLM captions identify the true `can` failure mode — **printed-label
+faults** (holographic foil patches, overprinted advertising text, mis-registered
+labels), not metal damage — so generation is conditioned on the right defect and
+any gap is not a captioning error. Scores: overlap **0.51**, separability **0.53**.
+
+![t-SNE of can defect crops: real vs generated vs normal](tsne_can_crop.png)
+
+Reading the figure: the real defects (green) are scattered throughout the normal
+cloud (blue) rather than forming their own cluster — at image-crop level a `can`
+crop is dominated by the printed label, so a defect crop embeds much like a normal
+crop. Because real defects are not separable from normal, the overlap (orange near
+green) is only weakly interpretable: "near a real defect" also tends to mean "near
+a normal." That overlap ≈ separability (0.51 ≈ 0.53) is internally consistent but
+not strong evidence either way.
+
+### Overall reading
+
+- **Separability is moderate-to-weak across all eight categories (0.30–0.69).** In
+  every category the real-defect points stay embedded in the normal cloud rather
+  than forming a clean island — even the highest, `wallplugs` (0.69), shows the
+  green points mixed throughout. At image-crop level the defect is small relative
+  to the object, so real defects do not separate cleanly from normal anywhere.
+- **The overlap scores are therefore a *relative* screen, not a precise ranking.**
+  At small N (15 real vs 15 generated) and with weak separability, where overlap
+  exceeds separability (`rice` 0.54 vs 0.30, `vial` 0.51 vs 0.36) the high overlap
+  partly reflects that real *and* generated both sit in the normal cloud, not that
+  the defect was reproduced.
+- **Relative spectrum (with that caveat).** `fabric`/`wallplugs` — generated land
+  nearest real; `rice`/`can`/`vial` — mixed; `sheet_metal`/`walnuts`/`fruit_jelly`
+  — generated drift to the periphery, away from real (clearest in `fruit_jelly`,
+  overlap 0.32).
+- **Conclusion.** Grounding generation in the real defect's caption and location
+  narrows but does not cleanly close the real–synthetic gap, and the image-level
+  embedding under-separates all groups, limiting how strongly these figures can be
+  read. A **patch-level** embedding — which isolates the defect's own feature cells
+  — separates real defects more cleanly and is the more sensitive test of overlap;
+  the image-level scores here are best read as a coarse, relative screen.
